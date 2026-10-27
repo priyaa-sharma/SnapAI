@@ -135,18 +135,21 @@ function App({ auth, accountControl }: { auth: AuthContext | null; accountContro
         if (!active) return;
         const jobs = jobsResult.jobs as UserJob[];
         setModels(modelsResult.models as UserModel[]);
+        for (const job of jobs) {
+          if (job.kind === "TRAINING" || job.status !== "COMPLETED" || handledJobs.current.has(job.id)) continue;
+          handledJobs.current.add(job.id);
+          const completedCreations = job.images.map((image, index) => ({
+            title: job.kind === "PACK" ? `Your new creation ${index + 1}` : job.prompt?.split(/[.!?]/, 1)[0].slice(0, 42) || "Your new creation",
+            image,
+            prompt: job.prompt || "",
+            time: "Just now",
+            generated: true,
+          }));
+          setCreations((current) => [...completedCreations, ...current]);
+        }
         if (activeJobId) {
           const currentJob = jobs.find((job) => job.id === activeJobId);
-          if (currentJob?.status === "COMPLETED" && !handledJobs.current.has(currentJob.id)) {
-            handledJobs.current.add(currentJob.id);
-            const completedCreations = currentJob.images.map((image, index) => ({
-              title: currentJob.kind === "PACK" ? `Your new creation ${index + 1}` : currentJob.prompt?.split(/[.!?]/, 1)[0].slice(0, 42) || "Your new creation",
-              image,
-              prompt: currentJob.prompt || "",
-              time: "Just now",
-              generated: true,
-            }));
-            setCreations((current) => [...completedCreations, ...current]);
+          if (currentJob?.status === "COMPLETED" && handledJobs.current.has(currentJob.id)) {
             setActiveImage(0);
             setActiveJobId(null);
             setIsGenerating(false);

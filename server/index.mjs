@@ -255,7 +255,7 @@ app.get("/api/jobs", requireUser, async (request, response) => {
       prompt: job.prompt,
       error: job.error,
       createdAt: job.createdAt,
-      images: await Promise.all(job.outputKeys.map(signedDownloadUrl)),
+      images: job.kind === "TRAINING" ? [] : await Promise.all(job.outputKeys.map(signedDownloadUrl)),
     })));
     response.json({ jobs: results });
   } catch (error) {

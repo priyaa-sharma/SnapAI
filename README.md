@@ -10,6 +10,8 @@ process jobs only while their notebook sessions are online.
 1. Copy `.env.example` to `.env` and set your own PostgreSQL connection,
    Clerk keys, S3 bucket credentials, and a long random `WORKER_SECRET`.
    Keep `.env` private; never paste credentials into chat or commit them.
+   The `VITE_CLERK_PUBLISHABLE_KEY` must be available when Vite starts; restart
+   the dev server after changing it.
 2. Create a private S3 bucket. Configure bucket CORS to allow `PUT` requests
    from `http://localhost:5173` and your deployed app origin, with the
    `Content-Type` request header.
@@ -21,7 +23,8 @@ process jobs only while their notebook sessions are online.
    npm run dev
    ```
 
-4. Open the app and sign in with Clerk. Create a model by uploading 3–20
+4. Configure the Clerk app's local and deployed origins/redirect URLs, then
+   open the app and sign in. Create a model by uploading 3–20
    training images, or queue an image/pack from the studio.
 5. In Colab, open `flux_worker_colab.ipynb` and
    `flux_train_worker_colab.ipynb`. Enable GPU runtimes and add Colab Secrets
@@ -44,7 +47,8 @@ For production, set these in the hosting provider's secret environment, run
 the frontend's Clerk publishable key as a build-time environment variable.
 Never expose `CLERK_SECRET_KEY`, `WORKER_SECRET`, AWS credentials, or
 `HF_TOKEN` to the browser. Add `BACKEND_URL`, `WORKER_SECRET`, and `HF_TOKEN`
-to each Colab notebook's private Secrets store instead.
+to each Colab notebook's private Secrets store instead. `HF_TOKEN` belongs
+only in Colab Secrets; accept the gated model license in Hugging Face first.
 
 ## Queue and worker behavior
 
