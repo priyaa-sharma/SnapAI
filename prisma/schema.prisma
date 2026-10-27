@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ModelStatus {
+  TRAINING
+  COMPLETED
+  FAILED
+}
+
+enum JobKind {
+  TRAINING
+  GENERATION
+  PACK
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model DreamModel {
+  id                String      @id @default(cuid())
+  clerkUserId       String
+  name              String
+  status            ModelStatus @default(TRAINING)
+  trainingImageKeys String[]
+  loraKey           String?
+  error             String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  jobs              GenerationJob[]
+
+  @@index([clerkUserId, createdAt])
+  @@index([status, createdAt])
+}
+
+model GenerationJob {
+  id            String    @id @default(cuid())
+  clerkUserId   String
+  kind          JobKind
+  status        JobStatus @default(PENDING)
+  modelId       String?
+  prompt        String?
+  style         String?
+  ratio         String?
+  imageCount    Int       @default(1)
+  outputKeys    String[]  @default([])
+  error         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  startedAt     DateTime?
+  completedAt   DateTime?
+  model         DreamModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+
+  @@index([status, kind, createdAt])
+  @@index([clerkUserId, createdAt])
+  @@index([modelId])
+}

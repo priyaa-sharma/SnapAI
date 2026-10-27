@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -35,6 +35,27 @@ type Creation = {
   generated?: boolean;
 };
 
+type AuthContext = {
+  getToken: () => Promise<string | null>;
+  isSignedIn: boolean;
+  isLoaded: boolean;
+};
+
+type UserJob = {
+  id: string;
+  kind: string;
+  status: string;
+  prompt: string | null;
+  error: string | null;
+  images: string[];
+};
+
+type UserModel = {
+  id: string;
+  name: string;
+  status: string;
+};
+
 const initialCreations: Creation[] = [
   {
     title: "Where the wild things grow",
@@ -68,7 +89,7 @@ const initialCreations: Creation[] = [
 
 const styles = ["Dreamy", "Cinematic", "Analog film", "Watercolor"];
 
-function App() {
+function App({ auth, accountControl }: { auth: AuthContext | null; accountControl?: ReactNode }) {
   const [prompt, setPrompt] = useState(initialPrompt);
   const [activeStyle, setActiveStyle] = useState("Dreamy");
   const [ratio, setRatio] = useState("3:2");
@@ -79,42 +100,154 @@ function App() {
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [trainDialogOpen, setTrainDialogOpen] = useState(false);
+  const [trainingName, setTrainingName] = useState("");
+  const [trainingFiles, setTrainingFiles] = useState<File[]>([]);
+  const [isTraining, setIsTraining] = useState(false);
+  const [models, setModels] = useState<UserModel[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const [packCount, setPackCount] = useState(4);
+  const handledJobs = useRef(new Set<string>());
 
   const selectedCreation = creations[activeImage % creations.length];
 
-  async function generateImage() {
+  async function apiRequest(path: string, init: RequestInit = {}) {
+    if (!auth?.isSignedIn) throw new Error("Sign in with Clerk to use your DreamSnap workspace.");
+    const token = await auth.getToken();
+    if (!token) throw new Error("Your sign-in session expired. Please sign in again.");
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(path, { ...init, headers });
+  }
+
+  useEffect(() => {
+    if (!auth?.isSignedIn) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const [jobsResponse, modelsResponse] = await Promise.all([
+          apiRequest("/api/jobs"),
+          apiRequest("/api/models"),
+        ]);
+        if (!jobsResponse.ok || !modelsResponse.ok) return;
+        const [jobsResult, modelsResult] = await Promise.all([jobsResponse.json(), modelsResponse.json()]);
+        if (!active) return;
+        const jobs = jobsResult.jobs as UserJob[];
+        setModels(modelsResult.models as UserModel[]);
+        if (activeJobId) {
+          const currentJob = jobs.find((job) => job.id === activeJobId);
+          if (currentJob?.status === "COMPLETED" && !handledJobs.current.has(currentJob.id)) {
+            handledJobs.current.add(currentJob.id);
+            const completedCreations = currentJob.images.map((image, index) => ({
+              title: currentJob.kind === "PACK" ? `Your new creation ${index + 1}` : currentJob.prompt?.split(/[.!?]/, 1)[0].slice(0, 42) || "Your new creation",
+              image,
+              prompt: currentJob.prompt || "",
+              time: "Just now",
+              generated: true,
+            }));
+            setCreations((current) => [...completedCreations, ...current]);
+            setActiveImage(0);
+            setActiveJobId(null);
+            setIsGenerating(false);
+            setNotice(currentJob.kind === "PACK" ? "Your image pack is ready" : "Your image is ready");
+          } else if (currentJob?.status === "FAILED") {
+            handledJobs.current.add(currentJob.id);
+            setActiveJobId(null);
+            setIsGenerating(false);
+            setNotice(currentJob.error || "The worker could not finish this job.");
+          }
+        }
+      } catch {
+        if (active) setNotice("Could not refresh your jobs. Check your connection and sign-in.");
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [auth, activeJobId]);
+
+  async function enqueueGeneration(isPack = false) {
     if (!prompt.trim() || isGenerating) return;
     setIsGenerating(true);
     setNotice("");
     try {
-      const response = await fetch("/api/generate", {
+      const response = await apiRequest(isPack ? "/api/pack/generate" : "/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, style: activeStyle, ratio }),
+        body: JSON.stringify({
+          prompt,
+          style: activeStyle,
+          ratio,
+          ...(selectedModelId ? { modelId: selectedModelId } : {}),
+          ...(isPack ? { count: packCount } : {}),
+        }),
       });
       const result = await response.json();
       if (!response.ok) {
-        throw new Error(result.error || "Image generation failed. Please try again.");
+        throw new Error(result.error || "Could not queue image generation.");
       }
-
-      const title = prompt.trim().split(/[.!?]/, 1)[0].slice(0, 42) || "Your new creation";
-      setCreations((current) => [
-        { title, image: result.imageUrl, prompt, time: "Just now", generated: true },
-        ...current,
-      ]);
-      setActiveImage(0);
-      setNotice("Your FLUX image is ready");
-      window.setTimeout(() => setNotice(""), 3200);
+      setActiveJobId(result.job.id as string);
+      setNotice("Job queued. Your Colab worker will pick it up.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Image generation failed. Please try again.");
-    } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function trainModel() {
+    if (isTraining) return;
+    if (trainingFiles.length < 3 || trainingFiles.length > 20) {
+      setNotice("Choose between 3 and 20 training images.");
+      return;
+    }
+    setIsTraining(true);
+    try {
+      const imageKeys: string[] = [];
+      for (const file of trainingFiles) {
+        const presignResponse = await apiRequest("/api/uploads/presign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contentType: file.type, size: file.size }),
+        });
+        const upload = await presignResponse.json();
+        if (!presignResponse.ok) throw new Error(upload.error || "Could not prepare an image upload.");
+        const putResponse = await fetch(upload.uploadUrl as string, {
+          method: "PUT",
+          headers: { "Content-Type": file.type },
+          body: file,
+        });
+        if (!putResponse.ok) throw new Error(`Could not upload ${file.name}. Check the S3 bucket CORS settings.`);
+        imageKeys.push(upload.key as string);
+      }
+      const response = await apiRequest("/api/training", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trainingName, imageKeys }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not queue model training.");
+      setTrainDialogOpen(false);
+      setTrainingFiles([]);
+      setTrainingName("");
+      setNotice("Model training queued. The training worker will pick it up.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not queue model training.");
+    } finally {
+      setIsTraining(false);
     }
   }
 
   function selectNavigation(item: string) {
     setActiveNav(item);
     setMobileMenuOpen(false);
+    if (item === "My models") {
+      setTrainDialogOpen(true);
+      return;
+    }
     if (item !== "Create") setNotice(`${item} is coming soon`);
   }
 
@@ -170,9 +303,9 @@ function App() {
           <button className="mobile-menu-button icon-button" aria-label="Open menu" onClick={() => setMobileMenuOpen(true)}><Menu size={20} /></button>
           <div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14} /><strong>{activeNav}</strong></div>
           <div className="topbar-actions">
-            <span className="credits-pill"><span className="credits-dot" /> 42 <span>credits left</span></span>
+            <span className="credits-pill"><span className="credits-dot" /> Colab <span>GPU workers</span></span>
             <button className="icon-button notification-button" aria-label="Notifications" onClick={() => setNotice("You’re all caught up")}><Bell size={18} /><i /></button>
-            <button className="topbar-avatar" aria-label="Open profile">P</button>
+            {accountControl || <button className="topbar-avatar" aria-label="Authentication setup required" onClick={() => setNotice("Configure Clerk keys in .env to sign in.")}>P</button>}
           </div>
         </header>
 
@@ -183,7 +316,10 @@ function App() {
               <h1>Make a little <span>magic.</span></h1>
               <p className="welcome-subtitle">A picture is worth a thousand daydreams. Start with one.</p>
             </div>
-            <button className="history-button" onClick={() => setNotice("Your recent generations are shown below")}><Clock3 size={15} /> History</button>
+            <div className="welcome-actions">
+              <button className="train-model-button" onClick={() => setTrainDialogOpen(true)}><Layers3 size={15} /> Train a model</button>
+              <button className="history-button" onClick={() => setNotice("Your recent generations are shown below")}><Clock3 size={15} /> History</button>
+            </div>
           </section>
 
           <section className="studio-grid" aria-label="Image generation studio">
@@ -217,20 +353,32 @@ function App() {
                 </div>
                 <div className="field-group model-group">
                   <div className="field-label">MODEL</div>
-                  <button className="model-select" onClick={() => setShowModelMenu((open) => !open)}><span className="model-flux">✳</span><span>FLUX.1 <small>Community</small></span><ChevronDown size={15} /></button>
-                  {showModelMenu && <div className="model-dropdown"><button onClick={() => { setShowModelMenu(false); setNotice("Free FLUX generation runs on community-shared GPUs and may take a few minutes"); }}>✳ FLUX.1 Schnell <span>Free community workers</span></button><button onClick={() => { setShowModelMenu(false); setNotice("DreamSnap custom models are coming soon"); }}>✧ My models <span>Train your own</span></button></div>}
+                  <button className="model-select" onClick={() => setShowModelMenu((open) => !open)}><span className="model-flux">✳</span><span>{selectedModelId ? models.find((model) => model.id === selectedModelId)?.name || "Your model" : "FLUX.1 Schnell"}</span><ChevronDown size={15} /></button>
+                  {showModelMenu && <div className="model-dropdown">
+                    <button onClick={() => { setSelectedModelId(""); setShowModelMenu(false); }}>✳ FLUX.1 Schnell <span>Base model</span></button>
+                    {models.filter((model) => model.status === "COMPLETED").map((model) => <button key={model.id} onClick={() => { setSelectedModelId(model.id); setShowModelMenu(false); }}>{model.name} <span>Your trained LoRA</span></button>)}
+                    <button onClick={() => { setShowModelMenu(false); setTrainDialogOpen(true); }}>＋ Train a custom model <span>Upload training images</span></button>
+                  </div>}
                 </div>
               </div>
 
-              <button className="generate-button" disabled={!prompt.trim() || isGenerating} onClick={generateImage}>
-                {isGenerating ? <><LoaderCircle className="spin" size={17} /> Dreaming up your image…</> : <><Sparkles size={17} /> Generate image <span>1 credit</span></>}
-              </button>
-              <p className="generation-note"><span className="sparkle-tiny">✦</span> Free community GPUs; generation can take a few minutes</p>
+              <div className="generate-actions">
+                <button className="generate-button" disabled={!prompt.trim() || isGenerating} onClick={() => void enqueueGeneration()}>
+                  {isGenerating ? <><LoaderCircle className="spin" size={17} /> Waiting for your worker…</> : <><Sparkles size={17} /> Generate image</>}
+                </button>
+                <label className="pack-count-label">PACK
+                  <select value={packCount} onChange={(event) => setPackCount(Number(event.target.value))} aria-label="Pack size">
+                    {[2, 4, 6, 8, 10].map((count) => <option key={count} value={count}>{count}</option>)}
+                  </select>
+                </label>
+                <button className="pack-button" disabled={!prompt.trim() || isGenerating} onClick={() => void enqueueGeneration(true)}>Create pack</button>
+              </div>
+              <p className="generation-note"><span className="sparkle-tiny">✦</span> Jobs wait in PostgreSQL until your Colab worker is online</p>
             </div>
 
             <div className="preview-panel">
               <div className="preview-topline">
-                <div><span className="live-dot" /> <span>{isGenerating ? "CREATING YOUR IMAGE" : "YOUR CANVAS"}</span></div>
+                <div><span className="live-dot" /> <span>{isGenerating ? "WAITING FOR WORKER" : "YOUR CANVAS"}</span></div>
                 <button className="subtle-icon-button" aria-label="More options" onClick={() => setNotice("More canvas options are coming soon")}><MoreHorizontal size={19} /></button>
               </div>
               <div className={`image-canvas ${isGenerating ? "canvas-loading" : ""}`}>
@@ -266,6 +414,19 @@ function App() {
           <footer className="page-footer"><span>Made for the pictures in your head <span>✦</span></span><button onClick={() => setNotice("Your feedback helps us make better magic")}>Send feedback <ArrowRight size={13} /></button></footer>
         </div>
       </main>
+      {trainDialogOpen && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isTraining) setTrainDialogOpen(false); }}>
+        <section className="training-dialog" role="dialog" aria-modal="true" aria-labelledby="training-title">
+          <div className="dialog-heading"><div><span className="heading-icon"><Layers3 size={16} /></span><h2 id="training-title">Train your model</h2></div><button className="subtle-icon-button" aria-label="Close dialog" disabled={isTraining} onClick={() => setTrainDialogOpen(false)}><X size={17} /></button></div>
+          <p>Upload 3–20 clear photos. Your Colab training worker will create a personal FLUX LoRA.</p>
+          <label className="training-field-label" htmlFor="model-name">MODEL NAME</label>
+          <input id="model-name" className="training-name-input" value={trainingName} onChange={(event) => setTrainingName(event.target.value)} maxLength={60} placeholder="e.g. My portrait style" />
+          <label className="training-upload" htmlFor="training-images"><Plus size={19} /><strong>Select training photos</strong><span>JPEG, PNG, or WebP · up to 15 MB each</span><small>{trainingFiles.length} / 20 selected</small></label>
+          <input id="training-images" className="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setTrainingFiles(Array.from(event.target.files || []).slice(0, 20))} />
+          {models.length > 0 && <div className="model-status-list"><strong>Your models</strong>{models.slice(0, 5).map((model) => <span key={model.id}>{model.name}<small>{model.status}</small></span>)}</div>}
+          <button className="generate-button" disabled={isTraining || trainingFiles.length < 3 || !trainingName.trim()} onClick={() => void trainModel()}>{isTraining ? <><LoaderCircle className="spin" size={16} /> Uploading and queueing…</> : <><Layers3 size={16} /> Queue model training</>}</button>
+          <small className="training-disclaimer">Training uses your configured worker GPU. Uploaded photos are stored in your private S3 bucket.</small>
+        </section>
+      </div>}
       {notice && <div className="toast"><span className="toast-check"><Sparkles size={13} /></span>{notice}<button aria-label="Dismiss notification" onClick={() => setNotice("")}><X size={14} /></button></div>}
     </div>
   );
