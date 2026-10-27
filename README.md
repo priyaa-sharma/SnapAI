@@ -1,4 +1,4 @@
-# DreamSnap AI
+# Snap AI
 
 DreamSnap is a React studio backed by Clerk authentication, PostgreSQL/Prisma
 job queues, private S3 object storage, and operator-run Colab GPU workers.
