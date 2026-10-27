@@ -113,7 +113,8 @@ function App({ auth, accountControl }: { auth: AuthContext | null; accountContro
   const selectedCreation = creations[activeImage % creations.length];
 
   async function apiRequest(path: string, init: RequestInit = {}) {
-    if (!auth?.isSignedIn) throw new Error("Sign in with Clerk to use your DreamSnap workspace.");
+    if (!auth) throw new Error("Configure VITE_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env, then restart the app.");
+    if (!auth.isSignedIn) throw new Error("Sign in with Clerk to use your DreamSnap workspace.");
     const token = await auth.getToken();
     if (!token) throw new Error("Your sign-in session expired. Please sign in again.");
     const headers = new Headers(init.headers);
@@ -130,7 +131,14 @@ function App({ auth, accountControl }: { auth: AuthContext | null; accountContro
           apiRequest("/api/jobs"),
           apiRequest("/api/models"),
         ]);
-        if (!jobsResponse.ok || !modelsResponse.ok) return;
+        if (!jobsResponse.ok) {
+          const result = await jobsResponse.json();
+          throw new Error(result.error || "Could not retrieve your jobs.");
+        }
+        if (!modelsResponse.ok) {
+          const result = await modelsResponse.json();
+          throw new Error(result.error || "Could not retrieve your models.");
+        }
         const [jobsResult, modelsResult] = await Promise.all([jobsResponse.json(), modelsResponse.json()]);
         if (!active) return;
         const jobs = jobsResult.jobs as UserJob[];
@@ -161,8 +169,8 @@ function App({ auth, accountControl }: { auth: AuthContext | null; accountContro
             setNotice(currentJob.error || "The worker could not finish this job.");
           }
         }
-      } catch {
-        if (active) setNotice("Could not refresh your jobs. Check your connection and sign-in.");
+      } catch (error) {
+        if (active) setNotice(error instanceof Error ? error.message : "Could not refresh your jobs.");
       }
     };
     void poll();
@@ -313,6 +321,7 @@ function App({ auth, accountControl }: { auth: AuthContext | null; accountContro
         </header>
 
         <div className="page-content">
+          {!auth && <div className="setup-notice"><strong>Finish backend setup to use the studio.</strong><span>Configure Clerk, PostgreSQL, S3, and WORKER_SECRET in .env, run npm run db:push, then restart npm run dev.</span></div>}
           <section className="welcome-row">
             <div>
               <div className="eyebrow"><span className="eyebrow-sparkle"><Sparkles size={12} /></span> YOUR CREATIVE SPACE</div>

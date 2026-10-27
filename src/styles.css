@@ -254,6 +254,8 @@ h1 span { color: #8a6cce; }
   .ratio-button { gap: 4px; font-size: 8px; }
 }
 .welcome-actions { display: flex; align-items: center; gap: 8px; }
+.setup-notice { display: flex; flex-direction: column; gap: 5px; margin-bottom: 20px; padding: 12px 14px; border: 1px solid #eadfc8; border-radius: 8px; color: #66573e; background: #fffaf0; font-size: 10px; }
+.setup-notice strong { font-size: 11px; }
 .train-model-button, .signin-button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid #e8e3f0; border-radius: 7px; color: #7054bf; background: #fff; font-size: 10px; font-weight: 600; }
 .signin-button { min-height: 29px; }
 .generate-actions { display: flex; align-items: center; gap: 7px; margin-top: 17px; }

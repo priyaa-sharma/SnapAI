@@ -61,6 +61,21 @@ function requireStorage(response) {
   return true;
 }
 
+async function requireQueueCapacity(userId, response, kind) {
+  const activeStatuses = ["PENDING", "PROCESSING"];
+  const [activeJobs, activeTrainingJobs] = await Promise.all([
+    prisma.generationJob.count({ where: { clerkUserId: userId, status: { in: activeStatuses } } }),
+    kind === "TRAINING"
+      ? prisma.generationJob.count({ where: { clerkUserId: userId, kind: "TRAINING", status: { in: activeStatuses } } })
+      : Promise.resolve(0),
+  ]);
+  if (activeJobs >= 3 || activeTrainingJobs >= 1) {
+    response.status(429).json({ error: activeTrainingJobs ? "You already have a model training job in progress." : "You have too many active jobs. Wait for one to finish before queueing another." });
+    return false;
+  }
+  return true;
+}
+
 async function signedDownloadUrl(key) {
   return getSignedUrl(s3, new GetObjectCommand({ Bucket: s3Bucket, Key: key }), { expiresIn: 900 });
 }
@@ -146,6 +161,12 @@ app.post("/api/training", requireUser, async (request, response) => {
   if (new Set(imageKeys).size !== imageKeys.length) {
     return response.status(400).json({ error: "Remove duplicate training images." });
   }
+  try {
+    if (!await requireQueueCapacity(request.userId, response, "TRAINING")) return;
+  } catch (error) {
+    console.error("Could not check the training queue:", error);
+    return response.status(500).json({ error: "Could not check the training queue." });
+  }
 
   try {
     const model = await prisma.dreamModel.create({
@@ -172,6 +193,12 @@ app.post("/api/generate", requireUser, async (request, response) => {
     return response.status(400).json({ error: "Choose a valid style and aspect ratio." });
   }
   if (!requireStorage(response)) return;
+  try {
+    if (!await requireQueueCapacity(request.userId, response, "GENERATION")) return;
+  } catch (error) {
+    console.error("Could not check the generation queue:", error);
+    return response.status(500).json({ error: "Could not check the generation queue." });
+  }
 
   try {
     let selectedModelId = null;
@@ -212,6 +239,12 @@ app.post("/api/pack/generate", requireUser, async (request, response) => {
     return response.status(400).json({ error: "Choose a pack size from 2 to 10 images." });
   }
   if (!requireStorage(response)) return;
+  try {
+    if (!await requireQueueCapacity(request.userId, response, "PACK")) return;
+  } catch (error) {
+    console.error("Could not check the pack queue:", error);
+    return response.status(500).json({ error: "Could not check the pack queue." });
+  }
 
   try {
     let selectedModelId = null;
