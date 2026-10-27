@@ -1,4 +1,4 @@
-# DreamSnap AI
+# Snap AI
 
 A responsive React and TypeScript interface for an AI image-generation studio.
 
